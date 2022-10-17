@@ -28,6 +28,9 @@
 
 #define DEFAULT_TEE_PATH "/dev/tee0"
 
+// FIXME: This was copy pasted from the TEE client api
+#define TEEC_CONFIG_PAYLOAD_REF_COUNT 4
+
 struct TeeConnectionState {
     int fd;
 };
@@ -89,6 +92,20 @@ static void close_tee_connection(VirtPassthroughTeeState *s, uint64_t fd)
     close((int) fd);
 }
 
+static void move_params_to_guest_shared_memory_if_necessary(struct tee_ioctl_param *params, size_t num_params)
+{
+    for (int i = 0; i < num_params; i++) {
+        printf("[qemu]: param %d   attr=%llx a=%llx  b=%llx  c=%llx\n", i, params[i].attr, params[i].a, params[i].b, params[i].c);
+    }
+}
+
+static void free_params_that_were_moved_to_shared_memory(struct tee_ioctl_param *params, size_t num_params)
+{
+    for (int i = 0; i < num_params; i++) {
+        printf("[qemu]: param %d   attr=%llx  a=%llx  b=%llx  c=%llx\n", i, params[i].attr, params[i].a, params[i].b, params[i].c);
+    }
+}
+
 static uint64_t handle_tee_ioc_version(
     int fd, 
     uint64_t phys_data_buffer_ptr, uint64_t phys_data_buffer_len, 
@@ -125,7 +142,123 @@ static uint64_t handle_tee_ioc_open_session(
     uint32_t *status
 )
 {
-    return 0;
+    int rc = 0;
+    struct tee_ioctl_buf_data guest_buf_data, host_buf_data;
+	struct tee_ioctl_open_session_arg *arg;
+	struct tee_ioctl_param *params = NULL;
+    size_t arg_and_params_combined_length;
+    const size_t max_arg_and_params_combined_length = 
+        sizeof(struct tee_ioctl_open_session_arg) + 
+        TEEC_CONFIG_PAYLOAD_REF_COUNT * sizeof(struct tee_ioctl_param);
+
+    printf("[qemu]: handle_tee_ioc_open_session\n");
+
+    if (phys_data_buffer_len < sizeof(guest_buf_data)) {
+        assert(false);
+        *status |= REG_STATUS_FLAG_ERROR;
+        return -ENOMEM;
+    }
+
+    cpu_physical_memory_read(phys_data_buffer_ptr, &guest_buf_data, sizeof(guest_buf_data));    
+    printf(
+        "[qemu]: recv  buf_data = {.buf_ptr = %p, .buf_len = %llx}\n",
+        (void*) guest_buf_data.buf_ptr, guest_buf_data.buf_len);
+
+    arg_and_params_combined_length = guest_buf_data.buf_len;
+    assert(guest_buf_data.buf_len == 
+        sizeof(struct tee_ioctl_open_session_arg) + 
+            TEEC_CONFIG_PAYLOAD_REF_COUNT * sizeof(struct tee_ioctl_param));
+    // FIXME: the size must also be a multiple of sizeof(param) after subtracting sizeof(arg)
+    if (arg_and_params_combined_length < sizeof(struct tee_ioctl_open_session_arg) ||
+        arg_and_params_combined_length > max_arg_and_params_combined_length)
+    {
+        assert(false);
+        *status |= REG_STATUS_FLAG_ERROR;
+        return -ENOMEM;
+    }
+
+    arg = g_malloc0(arg_and_params_combined_length);
+    params = (struct tee_ioctl_param*) (arg + 1);
+    cpu_physical_memory_read(guest_buf_data.buf_ptr, arg, arg_and_params_combined_length);
+
+    /*printf(
+        "[qemu]: uuid: '%x%x%x%x-%x%x-%x%x-%x%x-%x%x%x%x%x%x'\n"
+        "\targ.clnt_uuid: '%x%x%x%x-%x%x-%x%x-%x%x-%x%x%x%x%x%x'\n"
+        "\tclnt_login: %x (TEE_IOCTL_LOGIN_PUBLIC=0)\n"
+        "\tcancel_id: %x\n"
+        "\tsession: %x\n"
+        "\tret: %x\n"
+        "\tret_origin: %x\n"
+        "\tnum_params: %u\n", 
+        arg->uuid[0], arg->uuid[1], arg->uuid[2], arg->uuid[3],
+		arg->uuid[4], arg->uuid[5], arg->uuid[6], arg->uuid[7],
+		arg->uuid[8], arg->uuid[9], arg->uuid[10], arg->uuid[11],
+		arg->uuid[12], arg->uuid[13], arg->uuid[14], arg->uuid[15],
+
+        arg->clnt_uuid[0], arg->clnt_uuid[1], arg->clnt_uuid[2], arg->clnt_uuid[3],
+		arg->clnt_uuid[4], arg->clnt_uuid[5], arg->clnt_uuid[6], arg->clnt_uuid[7],
+		arg->clnt_uuid[8], arg->clnt_uuid[9], arg->clnt_uuid[10], arg->clnt_uuid[11],
+		arg->clnt_uuid[12], arg->clnt_uuid[13], arg->clnt_uuid[14], arg->clnt_uuid[15],
+
+	    arg->clnt_login,
+        arg->cancel_id,
+        arg->session,
+        arg->ret,
+        arg->ret_origin,
+        arg->num_params
+	);*/
+
+    move_params_to_guest_shared_memory_if_necessary(params, arg->num_params);
+    host_buf_data.buf_ptr = (uintptr_t) arg;
+    host_buf_data.buf_len = arg_and_params_combined_length;
+
+    printf("[qemu]: ioctl buf_data = {.buf_ptr = %p, .buf_len = %llx}\n", (void*) host_buf_data.buf_ptr, host_buf_data.buf_len);
+
+    if (ioctl(fd, TEE_IOC_OPEN_SESSION, &host_buf_data)) {
+        rc = errno;
+        *status |= REG_STATUS_FLAG_ERROR;
+        perror("ioctl open session failed");
+        assert(false);
+        goto cleanup;
+    }
+
+    // write_back_params_to_guest_memory(params, arg->num_params)
+    // write_back_buffer_contents
+    cpu_physical_memory_write(guest_buf_data.buf_ptr, (void*) host_buf_data.buf_ptr, guest_buf_data.buf_len);
+
+    /*printf("[qemu]: ioctl success! updated arg struct: \n");
+    printf(
+        "[qemu]: uuid: '%x%x%x%x-%x%x-%x%x-%x%x-%x%x%x%x%x%x'\n"
+        "\targ.clnt_uuid: '%x%x%x%x-%x%x-%x%x-%x%x-%x%x%x%x%x%x'\n"
+        "\tclnt_login: %x (TEE_IOCTL_LOGIN_PUBLIC=0)\n"
+        "\tcancel_id: %x\n"
+        "\tsession: %x\n"
+        "\tret: %x\n"
+        "\tret_origin: %x\n"
+        "\tnum_params: %u\n", 
+        arg->uuid[0], arg->uuid[1], arg->uuid[2], arg->uuid[3],
+		arg->uuid[4], arg->uuid[5], arg->uuid[6], arg->uuid[7],
+		arg->uuid[8], arg->uuid[9], arg->uuid[10], arg->uuid[11],
+		arg->uuid[12], arg->uuid[13], arg->uuid[14], arg->uuid[15],
+
+        arg->clnt_uuid[0], arg->clnt_uuid[1], arg->clnt_uuid[2], arg->clnt_uuid[3],
+		arg->clnt_uuid[4], arg->clnt_uuid[5], arg->clnt_uuid[6], arg->clnt_uuid[7],
+		arg->clnt_uuid[8], arg->clnt_uuid[9], arg->clnt_uuid[10], arg->clnt_uuid[11],
+		arg->clnt_uuid[12], arg->clnt_uuid[13], arg->clnt_uuid[14], arg->clnt_uuid[15],
+
+	    arg->clnt_login,
+        arg->cancel_id,
+        arg->session,
+        arg->ret,
+        arg->ret_origin,
+        arg->num_params
+	);*/
+
+cleanup:
+    free_params_that_were_moved_to_shared_memory(params, arg->num_params);
+    free(arg);
+
+    return rc;
 }
 
 static uint64_t handle_ioctl_request(
