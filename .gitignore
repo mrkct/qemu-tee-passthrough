@@ -1,5 +1,6 @@
 /GNUmakefile
 /build/
+/build-aarch64/
 *.pyc
 .sdk
 .stgit-*
