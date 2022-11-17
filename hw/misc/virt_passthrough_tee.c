@@ -51,10 +51,8 @@ typedef struct {
 	} tee_connections;
 } VirtPassthroughTeeState;
 
-static struct TeeConnectionState *get_associated_tee_connection(
-	VirtPassthroughTeeState *s, 
-	int guest_fd
-)
+static struct TeeConnectionState *
+get_associated_tee_connection(VirtPassthroughTeeState *s, int guest_fd)
 {
 	if (guest_fd < 0 || guest_fd >= s->tee_connections.length) {
 		printf("[qemu]: fatal. guest_fd=%d  tee_connections.length=%u\n",
@@ -70,7 +68,8 @@ static struct TeeConnectionState *get_associated_tee_connection(
 static int convert_guest_fd_to_host_fd(VirtPassthroughTeeState *s, int guest_fd,
 				       int *out_fd)
 {
-	struct TeeConnectionState *conn = get_associated_tee_connection(s, guest_fd);
+	struct TeeConnectionState *conn =
+		get_associated_tee_connection(s, guest_fd);
 
 	if (conn == NULL)
 		return 1;
@@ -98,9 +97,10 @@ static uint32_t open_new_tee_connection(VirtPassthroughTeeState *s)
 	s->tee_connections.data[s->tee_connections.length++] =
 		(struct TeeConnectionState){
 			.fd = fd,
-			.guest_shm_id_to_local_buffer = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_free)
+			.guest_shm_id_to_local_buffer = g_hash_table_new_full(
+				g_int64_hash, g_int64_equal, g_free, g_free)
 		};
-	
+
 	return s->tee_connections.length - 1;
 }
 
@@ -123,8 +123,8 @@ static void close_tee_connection(VirtPassthroughTeeState *s, uint64_t guest_fd)
 }
 
 static void sync_shared_memory_buffers_in_params_guest_to_host(
-	struct TeeConnectionState *conn, struct tee_ioctl_param params[], size_t num_params
-)
+	struct TeeConnectionState *conn, struct tee_ioctl_param params[],
+	size_t num_params)
 {
 	struct HostSharedMemoryBuffer *buf;
 	uint64_t offset, buffer_size;
@@ -132,30 +132,33 @@ static void sync_shared_memory_buffers_in_params_guest_to_host(
 	int64_t guest_shmem_id, key;
 
 	for (i = 0; i < num_params; i++) {
-		if (params[i].attr != TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_INPUT && 
-			params[i].attr != TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_INOUT)
+		if (params[i].attr != TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_INPUT &&
+		    params[i].attr != TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_INOUT)
 			continue;
-		
+
 		offset = params[i].a;
 		buffer_size = params[i].b;
-		guest_shmem_id = (int64_t) params[i].c;
+		guest_shmem_id = (int64_t)params[i].c;
 
-		// FIXME: Technically they can pass a NULL ptr, 
+		// FIXME: Technically they can pass a NULL ptr,
 		// see (section 3.2.5 memory references) http://www.globalplatform.org/specificationsdevice.asp
 		key = guest_shmem_id;
-		buf = g_hash_table_lookup(conn->guest_shm_id_to_local_buffer, &key);
+		buf = g_hash_table_lookup(conn->guest_shm_id_to_local_buffer,
+					  &key);
 		assert(buf != NULL);
 
 		assert(offset < buf->size);
 		assert(buffer_size <= buf->size);
 		assert(offset + buffer_size <= buf->size);
-		cpu_physical_memory_read(buf->guest_paddr + offset, &buf->mmap_address[offset], buffer_size);
+		cpu_physical_memory_read(buf->guest_paddr + offset,
+					 &buf->mmap_address[offset],
+					 buffer_size);
 	}
 }
 
 static void sync_shared_memory_buffers_in_params_host_to_guest(
-	struct TeeConnectionState *conn, struct tee_ioctl_param params[], size_t num_params
-)
+	struct TeeConnectionState *conn, struct tee_ioctl_param params[],
+	size_t num_params)
 {
 	struct HostSharedMemoryBuffer *buf;
 	uint64_t offset, buffer_size;
@@ -163,33 +166,34 @@ static void sync_shared_memory_buffers_in_params_host_to_guest(
 	int64_t guest_shmem_id, key;
 
 	for (i = 0; i < num_params; i++) {
-		if (params[i].attr != TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_OUTPUT && 
-			params[i].attr != TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_INOUT)
+		if (params[i].attr != TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_OUTPUT &&
+		    params[i].attr != TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_INOUT)
 			continue;
-		
+
 		offset = params[i].a;
 		buffer_size = params[i].b;
-		guest_shmem_id = (int64_t) params[i].c;
+		guest_shmem_id = (int64_t)params[i].c;
 
-		// FIXME: Technically they can pass a NULL ptr, 
+		// FIXME: Technically they can pass a NULL ptr,
 		// see (section 3.2.5 memory references) http://www.globalplatform.org/specificationsdevice.asp
 		key = guest_shmem_id;
-		buf = g_hash_table_lookup(conn->guest_shm_id_to_local_buffer, &key);
+		buf = g_hash_table_lookup(conn->guest_shm_id_to_local_buffer,
+					  &key);
 		assert(buf != NULL);
 
 		assert(offset < buf->size);
 		assert(buffer_size <= buf->size);
 		assert(offset + buffer_size <= buf->size);
-		cpu_physical_memory_write(buf->guest_paddr + offset, &buf->mmap_address[offset], buffer_size);
+		cpu_physical_memory_write(buf->guest_paddr + offset,
+					  &buf->mmap_address[offset],
+					  buffer_size);
 	}
 }
 
-static void temporarily_substitute_guest_memrefs_in_params_with_associated_host_memrefs(
-	struct TeeConnectionState *conn, 
-	int64_t **host2guest_shmem_id_map, 
-	struct tee_ioctl_param params[], 
-	size_t num_params
-)
+static void
+temporarily_substitute_guest_memrefs_in_params_with_associated_host_memrefs(
+	struct TeeConnectionState *conn, int64_t **host2guest_shmem_id_map,
+	struct tee_ioctl_param params[], size_t num_params)
 {
 	struct HostSharedMemoryBuffer *buf;
 	int64_t guest_shmem_id, key;
@@ -197,44 +201,45 @@ static void temporarily_substitute_guest_memrefs_in_params_with_associated_host_
 
 	assert(*host2guest_shmem_id_map == NULL);
 	// this gets free'd in 'convert_back_host_memrefs_with_associated_guest_memrefs'
-	*host2guest_shmem_id_map = g_new(int64_t, TEEC_CONFIG_PAYLOAD_REF_COUNT);
+	*host2guest_shmem_id_map =
+		g_new(int64_t, TEEC_CONFIG_PAYLOAD_REF_COUNT);
 
 	for (i = 0; i < num_params; i++) {
 		(*host2guest_shmem_id_map)[i] = -1;
-		if (params[i].attr != TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_INPUT && 
-			params[i].attr != TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_INOUT &&
-			params[i].attr != TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_OUTPUT)
+		if (params[i].attr != TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_INPUT &&
+		    params[i].attr != TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_INOUT &&
+		    params[i].attr != TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_OUTPUT)
 			continue;
-		
-		guest_shmem_id = (int64_t) params[i].c;
 
-		// FIXME: Technically they can pass a NULL ptr, 
+		guest_shmem_id = (int64_t)params[i].c;
+
+		// FIXME: Technically they can pass a NULL ptr,
 		// see (section 3.2.5 memory references) http://www.globalplatform.org/specificationsdevice.asp
 		key = guest_shmem_id;
-		buf = g_hash_table_lookup(conn->guest_shm_id_to_local_buffer, &key);
+		buf = g_hash_table_lookup(conn->guest_shm_id_to_local_buffer,
+					  &key);
 		assert(buf != NULL);
 
-		params[i].c = (uint64_t) buf->host_id;
-		(*host2guest_shmem_id_map)[i] = (int64_t) guest_shmem_id;
+		params[i].c = (uint64_t)buf->host_id;
+		(*host2guest_shmem_id_map)[i] = (int64_t)guest_shmem_id;
 	}
 }
 
 static void convert_back_host_memrefs_with_associated_guest_memrefs(
-	int64_t **host2guest_shmem_id_map, struct tee_ioctl_param params[], size_t num_params
-)
+	int64_t **host2guest_shmem_id_map, struct tee_ioctl_param params[],
+	size_t num_params)
 {
 	int i;
 
 	assert(*host2guest_shmem_id_map != NULL);
 
 	for (i = 0; i < num_params; i++) {
-		if (params[i].attr != TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_INPUT && 
-			params[i].attr != TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_INOUT &&
-			params[i].attr != TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_OUTPUT)
+		if (params[i].attr != TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_INPUT &&
+		    params[i].attr != TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_INOUT &&
+		    params[i].attr != TEE_IOCTL_PARAM_ATTR_TYPE_MEMREF_OUTPUT)
 			continue;
 
-		params[i].c = (uint64_t) (*host2guest_shmem_id_map)[i];
-
+		params[i].c = (uint64_t)(*host2guest_shmem_id_map)[i];
 	}
 	g_free(*host2guest_shmem_id_map);
 	*host2guest_shmem_id_map = NULL;
@@ -265,6 +270,8 @@ static uint64_t handle_command_get_version(uint64_t command_phys_address,
 	}
 
 	close(fd);
+	// FIXME: We don't support registering shared memory so let's not advertise that
+	command.version_data.gen_caps &= ~(TEE_GEN_CAP_REG_MEM);
 	cpu_physical_memory_write(command_phys_address, &command,
 				  sizeof(command));
 
@@ -313,30 +320,22 @@ static uint64_t handle_command_open_session(VirtPassthroughTeeState *s,
 				   command->open_session_arg.num_params;
 
 	sync_shared_memory_buffers_in_params_guest_to_host(
-		conn, 
-		command->open_session_arg.params, 
-		command->open_session_arg.num_params
-	);
+		conn, command->open_session_arg.params,
+		command->open_session_arg.num_params);
 	temporarily_substitute_guest_memrefs_in_params_with_associated_host_memrefs(
-		conn, &host2guest_shm_id_map,
-		command->open_session_arg.params, 
-		command->open_session_arg.num_params
-	);
+		conn, &host2guest_shm_id_map, command->open_session_arg.params,
+		command->open_session_arg.num_params);
 	if (ioctl(conn->fd, TEE_IOC_OPEN_SESSION, &buf_data)) {
 		rc = errno;
 		perror("ioctl open session failed");
 		goto cleanup;
 	}
 	convert_back_host_memrefs_with_associated_guest_memrefs(
-		&host2guest_shm_id_map,
-		command->open_session_arg.params, 
-		command->open_session_arg.num_params
-	);
+		&host2guest_shm_id_map, command->open_session_arg.params,
+		command->open_session_arg.num_params);
 	sync_shared_memory_buffers_in_params_host_to_guest(
-		conn, 
-		command->open_session_arg.params, 
-		command->open_session_arg.num_params
-	);
+		conn, command->open_session_arg.params,
+		command->open_session_arg.num_params);
 
 	cpu_physical_memory_write(command_phys_address, command, data_length);
 
@@ -393,30 +392,23 @@ static uint64_t handle_command_invoke_function(VirtPassthroughTeeState *s,
 				   command->invoke_function_arg.num_params;
 
 	sync_shared_memory_buffers_in_params_guest_to_host(
-		conn, 
-		command->invoke_function_arg.params, 
-		command->invoke_function_arg.num_params
-	);
+		conn, command->invoke_function_arg.params,
+		command->invoke_function_arg.num_params);
 	temporarily_substitute_guest_memrefs_in_params_with_associated_host_memrefs(
 		conn, &host2guest_shm_id_map,
-		command->invoke_function_arg.params, 
-		command->invoke_function_arg.num_params
-	);
+		command->invoke_function_arg.params,
+		command->invoke_function_arg.num_params);
 	if (ioctl(conn->fd, TEE_IOC_INVOKE, &buf_data)) {
 		rc = errno;
 		perror("ioctl open session failed");
 		goto cleanup;
 	}
 	convert_back_host_memrefs_with_associated_guest_memrefs(
-		&host2guest_shm_id_map,
-		command->invoke_function_arg.params, 
-		command->invoke_function_arg.num_params
-	);
+		&host2guest_shm_id_map, command->invoke_function_arg.params,
+		command->invoke_function_arg.num_params);
 	sync_shared_memory_buffers_in_params_host_to_guest(
-		conn, 
-		command->invoke_function_arg.params, 
-		command->invoke_function_arg.num_params
-	);
+		conn, command->invoke_function_arg.params,
+		command->invoke_function_arg.num_params);
 	cpu_physical_memory_write(command_phys_address, command, data_length);
 
 cleanup:
@@ -497,18 +489,19 @@ static uint64_t handle_ensure_memory_buffers_are_synchronized(
 			continue;
 
 		// Check if we already have allocated an associated buffer
-		if (g_hash_table_contains(conn->guest_shm_id_to_local_buffer, &command.buffers[i].id)) {
+		if (g_hash_table_contains(conn->guest_shm_id_to_local_buffer,
+					  &command.buffers[i].id)) {
 			continue;
 		}
-		
-		
+
 		// Allocate a shared memory buffer in the TEE and add it to the hashmap
 		memset(&alloc_ioctl_data, 0, sizeof(alloc_ioctl_data));
 		alloc_ioctl_data.size = command.buffers[i].size;
 		// FIXME: despite being also an input param, the tee.h header says to set this field to zero
 		//        or the ioctl will fail
-		alloc_ioctl_data.flags = 0; 
-		buffer_fd = ioctl(conn->fd, TEE_IOC_SHM_ALLOC, &alloc_ioctl_data);
+		alloc_ioctl_data.flags = 0;
+		buffer_fd =
+			ioctl(conn->fd, TEE_IOC_SHM_ALLOC, &alloc_ioctl_data);
 		// FIXME: Technically 'flag' and 'size' are input/output params, but we cannot pass them back...
 		if (buffer_fd <= 0) {
 			perror("failed to ioctl for alloc shared mem");
@@ -518,7 +511,9 @@ static uint64_t handle_ensure_memory_buffers_are_synchronized(
 
 		host_buffer = g_new(struct HostSharedMemoryBuffer, 1);
 		host_buffer->host_fd = buffer_fd;
-		host_buffer->mmap_address = mmap(NULL, alloc_ioctl_data.size, PROT_READ | PROT_WRITE, MAP_SHARED, buffer_fd, 0);
+		host_buffer->mmap_address =
+			mmap(NULL, alloc_ioctl_data.size,
+			     PROT_READ | PROT_WRITE, MAP_SHARED, buffer_fd, 0);
 		// FIXME: Handle the case in which mmap fails
 
 		host_buffer->host_id = alloc_ioctl_data.id;
@@ -526,10 +521,11 @@ static uint64_t handle_ensure_memory_buffers_are_synchronized(
 		host_buffer->size = command.buffers[i].size;
 		host_buffer->flags = command.buffers[i].flags;
 		host_buffer->guest_paddr = command.buffers[i].paddr;
-		
+
 		key = g_new(int64_t, 1);
 		*key = command.buffers[i].id;
-		g_hash_table_insert(conn->guest_shm_id_to_local_buffer, key, host_buffer);
+		g_hash_table_insert(conn->guest_shm_id_to_local_buffer, key,
+				    host_buffer);
 	}
 
 	return 0;
@@ -593,6 +589,7 @@ static void virt_passthrough_tee_write(void *opaque, hwaddr offset,
 	} else if (offset == TP_MMIO_REG_OFFSET_SEND_COMMAND && size == 4) {
 		cpu_physical_memory_read(s->command_ptr, &command_wrapper,
 					 sizeof(command_wrapper));
+		printf("[qemu-tp]: Received command %ld\n",command_wrapper.cmd_id);
 		switch (command_wrapper.cmd_id) {
 		case TP_CMD_GetVersion:
 			s->return_value = handle_command_get_version(
