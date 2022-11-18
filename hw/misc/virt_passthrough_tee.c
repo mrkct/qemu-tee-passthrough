@@ -55,8 +55,6 @@ static struct TeeConnectionState *
 get_associated_tee_connection(VirtPassthroughTeeState *s, int guest_fd)
 {
 	if (guest_fd < 0 || guest_fd >= s->tee_connections.length) {
-		printf("[qemu]: fatal. guest_fd=%d  tee_connections.length=%u\n",
-		       guest_fd, s->tee_connections.length);
 		return NULL;
 	}
 
@@ -460,6 +458,37 @@ static uint64_t handle_command_close_session(VirtPassthroughTeeState *s,
 	return 0;
 }
 
+static uint64_t handle_free_shared_memory_buffer(
+	VirtPassthroughTeeState *s, uint64_t command_phys_address,
+	uint64_t data_length, uint64_t *status)
+{
+	struct CommandFreeSharedMemoryBuffer command;
+	struct TeeConnectionState *conn;
+	struct HostSharedMemoryBuffer *shmem_to_free;
+
+	if (data_length != sizeof(command)) {
+		*status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
+		return -EINVAL;
+	}
+	cpu_physical_memory_read(command_phys_address, &command, data_length);
+	conn = get_associated_tee_connection(s, command.guest_fd);
+	if (conn == NULL) {
+		*status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
+		return -EINVAL;
+	}
+
+	if (!g_hash_table_contains(conn->guest_shm_id_to_local_buffer, &command.shmem_id)) {
+		*status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
+		return -EINVAL;
+	}
+	shmem_to_free = g_hash_table_lookup(conn->guest_shm_id_to_local_buffer, &command.shmem_id);
+	munmap(shmem_to_free->mmap_address, shmem_to_free->size);
+	close(shmem_to_free->host_fd);
+	g_hash_table_remove(conn->guest_shm_id_to_local_buffer, &command.shmem_id);
+
+	return 0;
+}
+
 static uint64_t handle_ensure_memory_buffers_are_synchronized(
 	VirtPassthroughTeeState *s, uint64_t command_phys_address,
 	uint64_t data_length, uint64_t *status)
@@ -589,7 +618,6 @@ static void virt_passthrough_tee_write(void *opaque, hwaddr offset,
 	} else if (offset == TP_MMIO_REG_OFFSET_SEND_COMMAND && size == 4) {
 		cpu_physical_memory_read(s->command_ptr, &command_wrapper,
 					 sizeof(command_wrapper));
-		printf("[qemu-tp]: Received command %ld\n",command_wrapper.cmd_id);
 		switch (command_wrapper.cmd_id) {
 		case TP_CMD_GetVersion:
 			s->return_value = handle_command_get_version(
@@ -622,6 +650,13 @@ static void virt_passthrough_tee_write(void *opaque, hwaddr offset,
 					s, command_wrapper.data,
 					command_wrapper.data_length,
 					&s->status);
+			break;
+		case TP_CMD_FreeSharedMemoryBuffer:
+			s->return_value = handle_free_shared_memory_buffer(
+				s, command_wrapper.data,
+				command_wrapper.data_length,
+				&s->status
+			);
 			break;
 		default:
 			s->status |= TP_MMIO_REG_STATUS_FLAG_ERROR;

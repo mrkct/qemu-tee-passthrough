@@ -25,6 +25,7 @@ enum CommandId {
 	TP_CMD_CancelRequest,
 	TP_CMD_CloseSession,
 	TP_CMD_EnsureMemoryBuffersAreSynchronized,
+	TP_CMD_FreeSharedMemoryBuffer,
 
 	__TP_CMD_Len
 };
@@ -67,6 +68,11 @@ struct CommandEnsureMemoryBuffersAreSynchronized {
 		uint32_t flags;
 		uint64_t paddr;
 	} buffers[4];
+} __attribute__((aligned(16)));
+
+struct CommandFreeSharedMemoryBuffer {
+	int64_t guest_fd;
+	int64_t shmem_id;
 } __attribute__((aligned(16)));
 
 #endif
