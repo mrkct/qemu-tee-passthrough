@@ -425,8 +425,25 @@ static uint64_t handle_command_cancel_request(VirtPassthroughTeeState *s,
 					      uint64_t data_length,
 					      uint64_t *status)
 {
-	// TODO: Implement this
-	assert(false);
+	int rc, host_fd;
+	struct CommandCancelRequest command;
+
+	if (data_length != sizeof(command)) {
+		*status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
+		return -EINVAL;
+	}
+	cpu_physical_memory_read(command_phys_address, &command, data_length);
+
+	if (convert_guest_fd_to_host_fd(s, command.fd, &host_fd)) {
+		*status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
+		return -EINVAL;
+	}
+
+	if ((rc = ioctl(host_fd, TEE_IOC_CANCEL, &command.cancel_request_arg))) {
+		perror("failed to cancel request");
+		return rc;
+	}
+
 	return 0;
 }
 
@@ -570,6 +587,7 @@ static uint64_t virt_passthrough_tee_read(void *opaque, hwaddr offset,
 		s->status = TP_MMIO_REG_STATUS_FLAG_BUSY;
 		result = open_new_tee_connection(s);
 	} else if (offset == TP_MMIO_REG_OFFSET_OPEN_TEE + 4) {
+		s->status = TP_MMIO_REG_STATUS_FLAG_BUSY;
 		result = 0;
 	} else if (offset == TP_MMIO_REG_OFFSET_STATUS) {
 		result = s->status & 0xffffffff;
