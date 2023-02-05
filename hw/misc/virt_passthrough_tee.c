@@ -268,8 +268,13 @@ static uint64_t handle_command_get_version(uint64_t command_phys_address,
 	}
 
 	close(fd);
-	// FIXME: We don't support registering shared memory so let's not advertise that
+	// We don't support the following capabilities so let's not advertise them
+	// FIXME: Actually support this stuff
 	command.version_data.gen_caps &= ~(TEE_GEN_CAP_REG_MEM);
+#define TEE_GEN_CAP_MEMREF_NULL (1 << 3) // FIXME: Why is this not defined in the kernel headers? Also, I don't really understand what this is
+	command.version_data.gen_caps &= ~(TEE_GEN_CAP_MEMREF_NULL);
+#undef TEE_GEN_CAP_MEMREF_NULL
+
 	cpu_physical_memory_write(command_phys_address, &command,
 				  sizeof(command));
 
@@ -342,7 +347,6 @@ cleanup:
 		g_free(command);
 	if (rc) {
 		*status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
-		assert(false);
 	}
 
 	return rc;
@@ -414,7 +418,6 @@ cleanup:
 		g_free(command);
 	if (rc) {
 		*status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
-		assert(false);
 	}
 
 	return rc;
