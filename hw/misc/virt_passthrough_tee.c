@@ -629,6 +629,10 @@ static uint64_t virt_passthrough_tee_read(void *opaque, hwaddr offset,
 		result = s->status & 0xffffffff;
 	} else if (offset == TP_MMIO_REG_OFFSET_STATUS + 4) {
 		result = (s->status >> 32) & 0xffffffff;
+	} else if (offset == TP_MMIO_REG_OFFSET_SEND_COMMAND && size == 4) {
+		result = start_command(s);
+		if ((int) result < 0)
+			s->status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
 	} else {
 		printf("[qemu]: invalid read at %lx size %d\n", offset, size);
 		assert(false);
@@ -668,10 +672,6 @@ static void virt_passthrough_tee_write(void *opaque, hwaddr offset,
 		close_tee_connection(s, value);
 	} else if (IS_OFFSET_FOR_REGISTER(TP_MMIO_REG_OFFSET_COMMAND_PTR)) {
 		WRITE_ACCOUNTING_FOR_4BYTE_SIZES(s->command_ptr, value);
-	} else if (offset == TP_MMIO_REG_OFFSET_SEND_COMMAND && size == 4) {
-		s->return_value = start_command(s);
-		if ((int)(s->return_value) < 0)
-			s->status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
 	}
 
 	s->status &= ~TP_MMIO_REG_STATUS_FLAG_BUSY;
