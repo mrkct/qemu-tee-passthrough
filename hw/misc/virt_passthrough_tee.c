@@ -85,6 +85,7 @@ static uint32_t open_new_tee_connection(VirtPassthroughTeeState *s)
 		return 0;
 	}
 
+	// FIXME: Use a GHashTable instead. See the FIXME in close_tee_connection
 	if (s->tee_connections.length == s->tee_connections.capacity) {
 		s->tee_connections.capacity += 8;
 		s->tee_connections.data = g_renew(struct TeeConnectionState,
@@ -243,7 +244,9 @@ static void convert_back_host_memrefs_with_associated_guest_memrefs(
 	*host2guest_shmem_id_map = NULL;
 }
 
-static uint64_t handle_command_get_version(uint64_t command_phys_address,
+static uint64_t handle_command_get_version(
+	VirtPassthroughTeeState *s,
+	uint64_t command_phys_address,
 					   uint64_t data_length,
 					   uint64_t *status)
 {
@@ -580,6 +583,36 @@ static uint64_t handle_ensure_memory_buffers_are_synchronized(
 	return 0;
 }
 
+struct {
+	uint64_t(*callback)(VirtPassthroughTeeState*, uint64_t, uint64_t, uint64_t*);
+	bool is_async; // If true, the callback will be called in a separate thread
+} command_handlers[] = {
+	[TP_CMD_GetVersion] = {handle_command_get_version, false},
+	[TP_CMD_OpenSession] = {handle_command_open_session, false},
+	[TP_CMD_InvokeFunction] = {handle_command_invoke_function, false},
+	[TP_CMD_CancelRequest] = {handle_command_cancel_request, false},
+	[TP_CMD_CloseSession] = {handle_command_close_session, false},
+	[TP_CMD_EnsureMemoryBuffersAreSynchronized] = {handle_ensure_memory_buffers_are_synchronized, false},
+	[TP_CMD_FreeSharedMemoryBuffer] = {handle_free_shared_memory_buffer, false}
+};
+
+static uint64_t start_command(VirtPassthroughTeeState *s)
+{
+	struct CommandWrapper wrapper;
+
+	cpu_physical_memory_read(s->command_ptr, &wrapper, sizeof(wrapper));
+	if (wrapper.cmd_id >= ARRAY_SIZE(command_handlers) || command_handlers[wrapper.cmd_id].callback == NULL) {
+		assert(false);
+		return -ENOTSUP;
+	}
+
+	if (!command_handlers[wrapper.cmd_id].is_async) {
+		return command_handlers[wrapper.cmd_id].callback(s, wrapper.data, wrapper.data_length, &s->status);
+	}
+
+	return -ENOTSUP;
+}
+
 static uint64_t virt_passthrough_tee_read(void *opaque, hwaddr offset,
 					  unsigned size)
 {
@@ -624,7 +657,6 @@ static void virt_passthrough_tee_write(void *opaque, hwaddr offset,
 		}                                                              \
 	} while (0)
 
-	struct CommandWrapper command_wrapper;
 	VirtPassthroughTeeState *s = (VirtPassthroughTeeState *)opaque;
 
 	assert(size == 4 || size == 8);
@@ -637,53 +669,9 @@ static void virt_passthrough_tee_write(void *opaque, hwaddr offset,
 	} else if (IS_OFFSET_FOR_REGISTER(TP_MMIO_REG_OFFSET_COMMAND_PTR)) {
 		WRITE_ACCOUNTING_FOR_4BYTE_SIZES(s->command_ptr, value);
 	} else if (offset == TP_MMIO_REG_OFFSET_SEND_COMMAND && size == 4) {
-		cpu_physical_memory_read(s->command_ptr, &command_wrapper,
-					 sizeof(command_wrapper));
-		switch (command_wrapper.cmd_id) {
-		case TP_CMD_GetVersion:
-			s->return_value = handle_command_get_version(
-				command_wrapper.data,
-				command_wrapper.data_length, &s->status);
-			break;
-		case TP_CMD_OpenSession:
-			s->return_value = handle_command_open_session(
-				s, command_wrapper.data,
-				command_wrapper.data_length, &s->status);
-			break;
-		case TP_CMD_InvokeFunction:
-			s->return_value = handle_command_invoke_function(
-				s, command_wrapper.data,
-				command_wrapper.data_length, &s->status);
-			break;
-		case TP_CMD_CancelRequest:
-			s->return_value = handle_command_cancel_request(
-				s, command_wrapper.data,
-				command_wrapper.data_length, &s->status);
-			break;
-		case TP_CMD_CloseSession:
-			s->return_value = handle_command_close_session(
-				s, command_wrapper.data,
-				command_wrapper.data_length, &s->status);
-			break;
-		case TP_CMD_EnsureMemoryBuffersAreSynchronized:
-			s->return_value =
-				handle_ensure_memory_buffers_are_synchronized(
-					s, command_wrapper.data,
-					command_wrapper.data_length,
-					&s->status);
-			break;
-		case TP_CMD_FreeSharedMemoryBuffer:
-			s->return_value = handle_free_shared_memory_buffer(
-				s, command_wrapper.data,
-				command_wrapper.data_length,
-				&s->status
-			);
-			break;
-		default:
+		s->return_value = start_command(s);
+		if ((int)(s->return_value) < 0)
 			s->status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
-			s->return_value = -ENOTSUP;
-			assert(false);
-		}
 	}
 
 	s->status &= ~TP_MMIO_REG_STATUS_FLAG_BUSY;
