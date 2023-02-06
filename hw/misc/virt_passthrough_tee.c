@@ -40,7 +40,6 @@ typedef struct {
 	SysBusDevice parent_obj;
 	MemoryRegion iomem;
 
-	uint64_t status;
 	uint64_t return_value;
 	uint64_t command_ptr;
 
@@ -81,7 +80,6 @@ static uint32_t open_new_tee_connection(VirtPassthroughTeeState *s)
 	int fd = open(DEFAULT_TEE_PATH, O_RDONLY);
 	if (fd < 0) {
 		perror("[qemu]: failed to open " DEFAULT_TEE_PATH);
-		s->status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
 		return 0;
 	}
 
@@ -109,7 +107,6 @@ static void close_tee_connection(VirtPassthroughTeeState *s, uint64_t guest_fd)
 	connection = get_associated_tee_connection(s, guest_fd);
 
 	if (connection == NULL) {
-		s->status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
 		return;
 	}
 
@@ -247,8 +244,7 @@ static void convert_back_host_memrefs_with_associated_guest_memrefs(
 static uint64_t handle_command_get_version(
 	VirtPassthroughTeeState *s,
 	uint64_t command_phys_address,
-					   uint64_t data_length,
-					   uint64_t *status)
+					   uint64_t data_length)
 {
 	int rc;
 	struct CommandGetVersion command;
@@ -257,14 +253,12 @@ static uint64_t handle_command_get_version(
 
 	int fd = open(DEFAULT_TEE_PATH, O_RDONLY);
 	if (fd <= 0) {
-		*status = TP_MMIO_REG_STATUS_FLAG_ERROR;
 		perror("failed to open " DEFAULT_TEE_PATH);
 		assert(false);
 		return (uint64_t)fd;
 	}
 
 	if ((rc = ioctl(fd, TEE_IOC_VERSION, &command.version_data))) {
-		*status = TP_MMIO_REG_STATUS_FLAG_ERROR;
 		perror("failed to query tee version for " DEFAULT_TEE_PATH);
 		assert(false);
 		return rc;
@@ -286,8 +280,7 @@ static uint64_t handle_command_get_version(
 
 static uint64_t handle_command_open_session(VirtPassthroughTeeState *s,
 					    uint64_t command_phys_address,
-					    uint64_t data_length,
-					    uint64_t *status)
+					    uint64_t data_length)
 {
 	int rc = 0;
 	int64_t *host2guest_shm_id_map = NULL;
@@ -348,17 +341,13 @@ static uint64_t handle_command_open_session(VirtPassthroughTeeState *s,
 cleanup:
 	if (command != NULL)
 		g_free(command);
-	if (rc) {
-		*status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
-	}
 
 	return rc;
 }
 
 static uint64_t handle_command_invoke_function(VirtPassthroughTeeState *s,
 					       uint64_t command_phys_address,
-					       uint64_t data_length,
-					       uint64_t *status)
+					       uint64_t data_length)
 {
 	int rc = 0;
 
@@ -419,29 +408,23 @@ static uint64_t handle_command_invoke_function(VirtPassthroughTeeState *s,
 cleanup:
 	if (command != NULL)
 		g_free(command);
-	if (rc) {
-		*status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
-	}
 
 	return rc;
 }
 
 static uint64_t handle_command_cancel_request(VirtPassthroughTeeState *s,
 					      uint64_t command_phys_address,
-					      uint64_t data_length,
-					      uint64_t *status)
+					      uint64_t data_length)
 {
 	int rc, host_fd;
 	struct CommandCancelRequest command;
 
 	if (data_length != sizeof(command)) {
-		*status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
 		return -EINVAL;
 	}
 	cpu_physical_memory_read(command_phys_address, &command, data_length);
 
 	if (convert_guest_fd_to_host_fd(s, command.fd, &host_fd)) {
-		*status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
 		return -EINVAL;
 	}
 
@@ -455,20 +438,17 @@ static uint64_t handle_command_cancel_request(VirtPassthroughTeeState *s,
 
 static uint64_t handle_command_close_session(VirtPassthroughTeeState *s,
 					     uint64_t command_phys_address,
-					     uint64_t data_length,
-					     uint64_t *status)
+					     uint64_t data_length)
 {
 	int rc, host_fd;
 	struct CommandCloseSession command;
 
 	if (data_length != sizeof(command)) {
-		*status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
 		return -EINVAL;
 	}
 	cpu_physical_memory_read(command_phys_address, &command, data_length);
 
 	if (convert_guest_fd_to_host_fd(s, command.fd, &host_fd)) {
-		*status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
 		return -EINVAL;
 	}
 
@@ -483,25 +463,22 @@ static uint64_t handle_command_close_session(VirtPassthroughTeeState *s,
 
 static uint64_t handle_free_shared_memory_buffer(
 	VirtPassthroughTeeState *s, uint64_t command_phys_address,
-	uint64_t data_length, uint64_t *status)
+	uint64_t data_length)
 {
 	struct CommandFreeSharedMemoryBuffer command;
 	struct TeeConnectionState *conn;
 	struct HostSharedMemoryBuffer *shmem_to_free;
 
 	if (data_length != sizeof(command)) {
-		*status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
 		return -EINVAL;
 	}
 	cpu_physical_memory_read(command_phys_address, &command, data_length);
 	conn = get_associated_tee_connection(s, command.guest_fd);
 	if (conn == NULL) {
-		*status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
 		return -EINVAL;
 	}
 
 	if (!g_hash_table_contains(conn->guest_shm_id_to_local_buffer, &command.shmem_id)) {
-		*status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
 		return -EINVAL;
 	}
 	shmem_to_free = g_hash_table_lookup(conn->guest_shm_id_to_local_buffer, &command.shmem_id);
@@ -514,7 +491,7 @@ static uint64_t handle_free_shared_memory_buffer(
 
 static uint64_t handle_ensure_memory_buffers_are_synchronized(
 	VirtPassthroughTeeState *s, uint64_t command_phys_address,
-	uint64_t data_length, uint64_t *status)
+	uint64_t data_length)
 {
 	int buffer_fd;
 	int64_t *key;
@@ -524,14 +501,12 @@ static uint64_t handle_ensure_memory_buffers_are_synchronized(
 	struct tee_ioctl_shm_alloc_data alloc_ioctl_data;
 
 	if (data_length != sizeof(command)) {
-		*status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
 		return -EINVAL;
 	}
 	cpu_physical_memory_read(command_phys_address, &command, data_length);
 
 	conn = get_associated_tee_connection(s, command.guest_fd);
 	if (conn == NULL) {
-		*status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
 		return -EINVAL;
 	}
 
@@ -584,7 +559,7 @@ static uint64_t handle_ensure_memory_buffers_are_synchronized(
 }
 
 struct {
-	uint64_t(*callback)(VirtPassthroughTeeState*, uint64_t, uint64_t, uint64_t*);
+	uint64_t(*callback)(VirtPassthroughTeeState*, uint64_t, uint64_t);
 	bool is_async; // If true, the callback will be called in a separate thread
 } command_handlers[] = {
 	[TP_CMD_GetVersion] = {handle_command_get_version, false},
@@ -607,7 +582,7 @@ static uint64_t start_command(VirtPassthroughTeeState *s)
 	}
 
 	if (!command_handlers[wrapper.cmd_id].is_async) {
-		return command_handlers[wrapper.cmd_id].callback(s, wrapper.data, wrapper.data_length, &s->status);
+		return command_handlers[wrapper.cmd_id].callback(s, wrapper.data, wrapper.data_length);
 	}
 
 	return -ENOTSUP;
@@ -620,25 +595,16 @@ static uint64_t virt_passthrough_tee_read(void *opaque, hwaddr offset,
 	VirtPassthroughTeeState *s = (VirtPassthroughTeeState *)opaque;
 
 	if (offset == TP_MMIO_REG_OFFSET_OPEN_TEE) {
-		s->status = TP_MMIO_REG_STATUS_FLAG_BUSY;
 		result = open_new_tee_connection(s);
 	} else if (offset == TP_MMIO_REG_OFFSET_OPEN_TEE + 4) {
-		s->status = TP_MMIO_REG_STATUS_FLAG_BUSY;
 		result = 0;
-	} else if (offset == TP_MMIO_REG_OFFSET_STATUS) {
-		result = s->status & 0xffffffff;
-	} else if (offset == TP_MMIO_REG_OFFSET_STATUS + 4) {
-		result = (s->status >> 32) & 0xffffffff;
 	} else if (offset == TP_MMIO_REG_OFFSET_SEND_COMMAND && size == 4) {
 		result = start_command(s);
-		if ((int) result < 0)
-			s->status |= TP_MMIO_REG_STATUS_FLAG_ERROR;
 	} else {
 		printf("[qemu]: invalid read at %lx size %d\n", offset, size);
 		assert(false);
 	}
 
-	s->status &= ~TP_MMIO_REG_STATUS_FLAG_BUSY;
 	return result;
 }
 
@@ -665,16 +631,12 @@ static void virt_passthrough_tee_write(void *opaque, hwaddr offset,
 
 	assert(size == 4 || size == 8);
 
-	s->status = TP_MMIO_REG_STATUS_FLAG_BUSY;
-
 	// Special case: we only allow a single 32bit write to this register
 	if (offset == TP_MMIO_REG_OFFSET_CLOSE_TEE && size == 4) {
 		close_tee_connection(s, value);
 	} else if (IS_OFFSET_FOR_REGISTER(TP_MMIO_REG_OFFSET_COMMAND_PTR)) {
 		WRITE_ACCOUNTING_FOR_4BYTE_SIZES(s->command_ptr, value);
 	}
-
-	s->status &= ~TP_MMIO_REG_STATUS_FLAG_BUSY;
 }
 
 static const MemoryRegionOps virt_tee_passthrough_ops = {
@@ -691,8 +653,6 @@ static void virt_passthrough_tee_realize(DeviceState *d, Error **errp)
 	memory_region_init_io(&s->iomem, OBJECT(s), &virt_tee_passthrough_ops,
 			      s, TYPE_VIRT_PASSTHROUGH_TEE, 0x200);
 	sysbus_init_mmio(sbd, &s->iomem);
-
-	s->status = 0;
 
 #define INITIAL_CAPACITY 4
 
